@@ -187,6 +187,10 @@
             animation: pulse 2s ease-in-out infinite;
         }
 
+        .sync-dot.syncing {
+            background: var(--warning);
+        }
+
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
@@ -327,6 +331,12 @@
             box-shadow: 0 6px 25px rgba(45, 53, 97, 0.4);
         }
 
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
         .btn-danger {
             background: var(--accent);
             color: white;
@@ -465,6 +475,13 @@
             display: none !important;
         }
 
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: white;
+            font-size: 1.2rem;
+        }
+
         @keyframes fadeInDown {
             from {
                 opacity: 0;
@@ -519,8 +536,12 @@
     </style>
 </head>
 <body>
+    <div id="loading" class="loading">
+        <div>⏳ טוען...</div>
+    </div>
+
     <!-- Login Screen -->
-    <div id="loginScreen" class="login-container">
+    <div id="loginScreen" class="login-container hidden">
         <div class="login-card">
             <div class="login-icon">🔐</div>
             <h1 class="login-title">הוצאות המשפחה</h1>
@@ -547,8 +568,8 @@
             <h1>💰 הוצאות המשפחה</h1>
             <p>מעקב פשוט ונוח אחרי ההוצאות וההכנסות שלכם</p>
             <div class="sync-indicator">
-                <div class="sync-dot"></div>
-                <span>מסונכרן בזמן אמת</span>
+                <div class="sync-dot" id="syncDot"></div>
+                <span id="syncStatus">מסונכרן בזמן אמת ☁️</span>
             </div>
         </div>
 
@@ -609,7 +630,7 @@
                         <textarea id="notes" placeholder="הערות נוספות..."></textarea>
                     </div>
                 </div>
-                <button type="submit" class="btn btn-primary">💾 שמור רשומה</button>
+                <button type="submit" class="btn btn-primary" id="submitBtn">💾 שמור רשומה</button>
             </form>
         </div>
 
@@ -624,13 +645,35 @@
         </div>
     </div>
 
-    <script>
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
         // ⚠️ שנה את הקוד הזה לקוד משלך!
         const FAMILY_PASSCODE = 'mishpacha2024';
+
+        // Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyAyjiDNFEXEkHNZoUWAB69m1j6fCAHCEpU",
+            authDomain: "family-expenses-6d92d.firebaseapp.com",
+            projectId: "family-expenses-6d92d",
+            storageBucket: "family-expenses-6d92d.firebasestorage.app",
+            messagingSenderId: "416941753972",
+            appId: "1:416941753972:web:f1661655c221cd7cbe7321"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
 
         let expenses = [];
         let currentFilter = 'all';
         let isLoggedIn = false;
+        let unsubscribe = null;
+
+        // Hide loading
+        document.getElementById('loading').classList.add('hidden');
 
         // Check if already logged in
         function checkLogin() {
@@ -638,7 +681,9 @@
             if (loggedIn === 'true') {
                 isLoggedIn = true;
                 showMainApp();
-                loadData();
+                startListening();
+            } else {
+                document.getElementById('loginScreen').classList.remove('hidden');
             }
         }
 
@@ -653,7 +698,7 @@
                 localStorage.setItem('family_logged_in', 'true');
                 isLoggedIn = true;
                 showMainApp();
-                loadData();
+                startListening();
             } else {
                 input.classList.add('error');
                 errorMsg.classList.add('show');
@@ -666,14 +711,17 @@
         });
 
         // Logout
-        function logout() {
+        window.logout = function() {
             if (confirm('האם אתה בטוח שברצונך לצאת?')) {
                 localStorage.removeItem('family_logged_in');
                 isLoggedIn = false;
+                if (unsubscribe) {
+                    unsubscribe();
+                }
                 document.getElementById('mainApp').classList.add('hidden');
                 document.getElementById('loginScreen').classList.remove('hidden');
             }
-        }
+        };
 
         // Show main app
         function showMainApp() {
@@ -681,36 +729,39 @@
             document.getElementById('mainApp').classList.remove('hidden');
         }
 
-        // Load data from localStorage
-        async function loadData() {
-            const stored = localStorage.getItem('family-expenses-data');
-            if (stored) {
-                try {
-                    expenses = JSON.parse(stored);
-                } catch (error) {
-                    console.error('Error loading data:', error);
-                    expenses = [];
-                }
-            }
-            updateDisplay();
+        // Start listening to Firestore
+        function startListening() {
+            const q = query(collection(db, "expenses"), orderBy("timestamp", "desc"));
+            
+            unsubscribe = onSnapshot(q, (snapshot) => {
+                expenses = [];
+                snapshot.forEach((doc) => {
+                    expenses.push({
+                        id: doc.id,
+                        ...doc.data()
+                    });
+                });
+                updateDisplay();
+                updateSyncStatus(true);
+            }, (error) => {
+                console.error("Error listening to expenses:", error);
+                updateSyncStatus(false);
+            });
         }
 
-        // Save data to localStorage
-        async function saveData() {
-            try {
-                localStorage.setItem('family-expenses-data', JSON.stringify(expenses));
-            } catch (error) {
-                console.error('Error saving data:', error);
-                alert('שגיאה בשמירת הנתונים');
+        // Update sync status
+        function updateSyncStatus(synced) {
+            const dot = document.getElementById('syncDot');
+            const status = document.getElementById('syncStatus');
+            
+            if (synced) {
+                dot.classList.remove('syncing');
+                status.textContent = 'מסונכרן בזמן אמת ☁️';
+            } else {
+                dot.classList.add('syncing');
+                status.textContent = 'מסנכרן...';
             }
         }
-
-        // Auto-refresh every 5 seconds to sync
-        setInterval(() => {
-            if (isLoggedIn) {
-                loadData();
-            }
-        }, 5000);
 
         // Set today's date as default
         document.getElementById('date').valueAsDate = new Date();
@@ -718,24 +769,35 @@
         // Form submission
         document.getElementById('expenseForm').addEventListener('submit', async function(e) {
             e.preventDefault();
+            
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = true;
+            submitBtn.textContent = '💾 שומר...';
+            updateSyncStatus(false);
 
             const expense = {
-                id: Date.now(),
                 type: document.getElementById('type').value,
                 amount: parseFloat(document.getElementById('amount').value),
                 category: document.getElementById('category').value,
                 date: document.getElementById('date').value,
                 description: document.getElementById('description').value,
-                notes: document.getElementById('notes').value
+                notes: document.getElementById('notes').value,
+                timestamp: Date.now()
             };
 
-            expenses.unshift(expense);
-            await saveData();
-            updateDisplay();
-
-            // Reset form
-            this.reset();
-            document.getElementById('date').valueAsDate = new Date();
+            try {
+                await addDoc(collection(db, "expenses"), expense);
+                
+                // Reset form
+                this.reset();
+                document.getElementById('date').valueAsDate = new Date();
+            } catch (error) {
+                console.error("Error adding expense:", error);
+                alert('שגיאה בשמירת הרשומה. נסה שוב.');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = '💾 שמור רשומה';
+            }
         });
 
         // Filter buttons
@@ -749,13 +811,17 @@
         });
 
         // Delete expense
-        async function deleteExpense(id) {
+        window.deleteExpense = async function(id) {
             if (confirm('האם אתה בטוח שברצונך למחוק רשומה זו?')) {
-                expenses = expenses.filter(e => e.id !== id);
-                await saveData();
-                updateDisplay();
+                updateSyncStatus(false);
+                try {
+                    await deleteDoc(doc(db, "expenses", id));
+                } catch (error) {
+                    console.error("Error deleting expense:", error);
+                    alert('שגיאה במחיקת הרשומה. נסה שוב.');
+                }
             }
-        }
+        };
 
         // Update display
         function updateDisplay() {
@@ -808,7 +874,7 @@
                             <div class="expense-amount ${expense.type}-type">
                                 ${expense.type === 'expense' ? '-' : '+'}₪${expense.amount.toFixed(2)}
                             </div>
-                            <button class="btn btn-danger" onclick="deleteExpense(${expense.id})">🗑️</button>
+                            <button class="btn btn-danger" onclick="deleteExpense('${expense.id}')">🗑️</button>
                         </div>
                     </div>
                 `).join('');
